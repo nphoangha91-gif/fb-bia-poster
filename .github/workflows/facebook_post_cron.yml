@@ -1,0 +1,87 @@
+name: Facebook Auto Poster Cron
+
+on:
+  schedule:
+    # 9 ca mỗi ngày vào phút :25 (Giờ Việt Nam: 7:25, 9:25, 11:25, 13:25, 15:25, 17:25, 19:25, 21:25, 23:25)
+    # Tương ứng giờ UTC: 00:25, 02:25, 04:25, 06:25, 08:25, 10:25, 12:25, 14:25, 16:25
+    - cron: '25 0,2,4,6,8,10,12,14,16 * * *'
+  workflow_dispatch:
+    inputs:
+      total_groups:
+        description: 'Số lượng nhóm muốn đăng trong ca này'
+        required: true
+        default: '20'
+        type: string
+      batch_size:
+        description: 'Kích thước mỗi đợt (xong đợt nghỉ 2.5-3.5 phút)'
+        required: true
+        default: '10'
+        type: string
+      test_group_url:
+        description: 'URL nhóm test đơn lẻ (để trống để đăng theo danh sách 662 nhóm)'
+        required: false
+        default: ''
+        type: string
+      dry_run:
+        description: 'Chế độ test (false = ĐĂNG THẬT, true = Chỉ test không đăng)'
+        required: true
+        default: 'false'
+        type: boolean
+
+jobs:
+  post-to-facebook:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache Playwright Browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('**/requirements.txt') }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Run Auto Poster (High Speed Batching)
+        env:
+          FB_COOKIES_JSON: ${{ secrets.FB_COOKIES_JSON }}
+          FB_USERNAME: ${{ secrets.FB_USERNAME }}
+          FB_PASSWORD: ${{ secrets.FB_PASSWORD }}
+          TEST_GROUP_URL: ${{ github.event.inputs.test_group_url || '' }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          TOTAL_GROUPS_LIMIT: ${{ github.event.inputs.total_groups || '20' }}
+          BATCH_SIZE: ${{ github.event.inputs.batch_size || '10' }}
+        run: |
+          python github_cron_poster.py
+
+      - name: Upload proof screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-proof-screenshots
+          path: '*.png'
+          if-no-files-found: ignore
+
+      - name: Save posted progress history
+        if: ${{ always() && (github.event.inputs.dry_run != 'true') }}
+        run: |
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add posted_history.json || true
+          git commit -m "chore: update posted groups progress [skip ci]" || echo "No changes to commit"
+          git push || echo "Push failed or no changes"
